@@ -301,11 +301,21 @@ public class UnifiedGcLogParser {
 
     private static Instant parseTimestamp(String text) {
         try {
-            return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant();
+            return OffsetDateTime.parse(text, GC_LOG_TIMESTAMP).toInstant();
         } catch (DateTimeParseException ignored) {
-            return Instant.EPOCH;
+            try {
+                return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant();
+            } catch (DateTimeParseException ignoredAgain) {
+                return Instant.EPOCH;
+            }
         }
     }
+
+    /** JDK unified GC logs use {@code -0400}; ISO_OFFSET_DATE_TIME expects {@code -04:00}. */
+    private static final DateTimeFormatter GC_LOG_TIMESTAMP = new java.time.format.DateTimeFormatterBuilder()
+            .append(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+            .appendOffset("+HHMM", "Z")
+            .toFormatter();
 
     static PauseClassification classifyPause(String description) {
         String reason = "";

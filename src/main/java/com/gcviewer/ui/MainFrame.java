@@ -4,7 +4,6 @@ import com.gcviewer.model.GcLogModel;
 import com.gcviewer.model.GcPauseEvent;
 import com.gcviewer.parser.GcLogTailer;
 import com.gcviewer.parser.UnifiedGcLogParser;
-import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
 
 import javax.swing.*;
@@ -20,16 +19,15 @@ import java.util.prefs.Preferences;
 public class MainFrame extends JFrame {
     private final UnifiedGcLogParser parser = new UnifiedGcLogParser();
     private final MetricsPanel metricsPanel = new MetricsPanel();
-    private final GcEventTablePanel eventTablePanel = new GcEventTablePanel();
-    private final GcEventDetailPanel detailPanel = new GcEventDetailPanel();
-
     private final JvmMemorySizePanel jvmMemorySizePanel = new JvmMemorySizePanel();
-    private ChartPanel heapAfterGcPanel;
-    private ChartPanel heapBeforeGcPanel;
-    private ChartPanel pauseGcDurationPanel;
-    private ChartPanel reclaimedBytesPanel;
-    private ChartPanel youngGenPanel;
-    private ChartPanel metaSpacePanel;
+    private final AllocatedVsPeakPanel allocatedVsPeakPanel = new AllocatedVsPeakPanel();
+    private final GcEventDetailsPanel gcEventDetailsPanel = new GcEventDetailsPanel();
+    private GcChartPanel heapAfterGcPanel;
+    private GcChartPanel heapBeforeGcPanel;
+    private GcChartPanel pauseGcDurationPanel;
+    private GcChartPanel reclaimedBytesPanel;
+    private GcChartPanel youngGenPanel;
+    private GcChartPanel metaSpacePanel;
 
     private GcLogModel currentModel;
     private GcPauseEvent selectedEvent;
@@ -55,35 +53,29 @@ public class MainFrame extends JFrame {
 
         JTabbedPane charts = new JTabbedPane();
         charts.addTab("JVM Memory Size", jvmMemorySizePanel);
-        heapAfterGcPanel = createChartPanel(null);
-        heapBeforeGcPanel = createChartPanel(null);
-        pauseGcDurationPanel = createChartPanel(null);
-        reclaimedBytesPanel = createChartPanel(null);
-        youngGenPanel = createChartPanel(null);
-        metaSpacePanel = createChartPanel(null);
+        charts.addTab("Allocated vs Peak", allocatedVsPeakPanel);
+        heapAfterGcPanel = createChartPanel();
+        heapBeforeGcPanel = createChartPanel();
+        pauseGcDurationPanel = createChartPanel();
+        reclaimedBytesPanel = createChartPanel();
+        youngGenPanel = createChartPanel();
+        metaSpacePanel = createChartPanel();
         charts.addTab("Heap after GC", heapAfterGcPanel);
         charts.addTab("Heap before GC", heapBeforeGcPanel);
         charts.addTab("Pause GC Duration", pauseGcDurationPanel);
         charts.addTab("Reclaimed Bytes", reclaimedBytesPanel);
         charts.addTab("Young Gen", youngGenPanel);
         charts.addTab("Meta Space", metaSpacePanel);
+        charts.addTab("GC Event Details", gcEventDetailsPanel);
 
-        eventTablePanel.setSelectionListener(event -> {
+        gcEventDetailsPanel.setSelectionListener(event -> {
             selectedEvent = event;
-            detailPanel.showEvent(event);
+            gcEventDetailsPanel.showEventDetail(event);
         });
-
-        JSplitPane tableDetail = new JSplitPane(JSplitPane.VERTICAL_SPLIT, eventTablePanel, detailPanel);
-        tableDetail.setResizeWeight(0.55);
-        tableDetail.setDividerLocation(220);
-
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, charts, tableDetail);
-        split.setResizeWeight(0.58);
-        split.setDividerLocation(400);
 
         getContentPane().setLayout(new BorderLayout(8, 8));
         getContentPane().add(top, BorderLayout.NORTH);
-        getContentPane().add(split, BorderLayout.CENTER);
+        getContentPane().add(charts, BorderLayout.CENTER);
 
         String lastFile = prefs.get("lastGcLog", "");
         if (!lastFile.isBlank()) {
@@ -152,12 +144,8 @@ public class MainFrame extends JFrame {
         return toolbar;
     }
 
-    private ChartPanel createChartPanel(JFreeChart chart) {
-        ChartPanel panel = new ChartPanel(chart);
-        panel.setMouseWheelEnabled(true);
-        panel.setPreferredSize(new Dimension(800, 320));
-        panel.setFillZoomRectangle(true);
-        return panel;
+    private GcChartPanel createChartPanel() {
+        return new GcChartPanel();
     }
 
     private void autoLoadSampleLogs() {
@@ -298,24 +286,25 @@ public class MainFrame extends JFrame {
         currentModel = model;
         selectedEvent = null;
         metricsPanel.update(model);
-        eventTablePanel.update(model);
+        gcEventDetailsPanel.update(model);
 
         var events = model.getPauseEvents();
         long regionBytes = model.getHeapInfo() != null && model.getHeapInfo().regionSizeBytes() > 0
                 ? model.getHeapInfo().regionSizeBytes() : 1024L * 1024L;
 
         jvmMemorySizePanel.update(model);
-        heapAfterGcPanel.setChart(ChartFactoryUtil.createHeapAfterGcChart(events));
-        heapBeforeGcPanel.setChart(ChartFactoryUtil.createHeapBeforeGcChart(events));
-        pauseGcDurationPanel.setChart(ChartFactoryUtil.createPauseGcDurationChart(events));
-        reclaimedBytesPanel.setChart(ChartFactoryUtil.createReclaimedBytesChart(events));
-        youngGenPanel.setChart(ChartFactoryUtil.createYoungGenChart(events, regionBytes));
-        metaSpacePanel.setChart(ChartFactoryUtil.createMetaSpaceTabChart(events));
+        allocatedVsPeakPanel.update(model);
+        heapAfterGcPanel.setChart(ChartFactoryUtil.createHeapAfterGcChart(events), events);
+        heapBeforeGcPanel.setChart(ChartFactoryUtil.createHeapBeforeGcChart(events), events);
+        pauseGcDurationPanel.setChart(ChartFactoryUtil.createPauseGcDurationChart(events), events);
+        reclaimedBytesPanel.setChart(ChartFactoryUtil.createReclaimedBytesChart(events), events);
+        youngGenPanel.setChart(ChartFactoryUtil.createYoungGenChart(events, regionBytes), events);
+        metaSpacePanel.setChart(ChartFactoryUtil.createMetaSpaceTabChart(events), events);
 
         if (!events.isEmpty()) {
             selectedEvent = events.get(0);
+            gcEventDetailsPanel.showEventDetail(selectedEvent);
         }
-        detailPanel.showEvent(selectedEvent);
     }
 
     private void statusError(String message) {

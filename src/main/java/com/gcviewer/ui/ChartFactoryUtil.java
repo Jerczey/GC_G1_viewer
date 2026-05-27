@@ -22,6 +22,7 @@ import org.jfree.data.time.TimeSeries;
 import org.jfree.data.time.TimeSeriesCollection;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
+import org.jfree.chart.ui.RectangleInsets;
 
 import java.awt.*;
 import java.text.DecimalFormat;
@@ -76,6 +77,7 @@ public final class ChartFactoryUtil {
 
         XYPlot plot = chart.getXYPlot();
         plot.setBackgroundPaint(Color.WHITE);
+        plot.setAxisOffset(new RectangleInsets(8, 8, 8, 8));
         plot.setDomainGridlinePaint(new Color(220, 220, 220));
         plot.setRangeGridlinePaint(new Color(220, 220, 220));
 
@@ -90,7 +92,21 @@ public final class ChartFactoryUtil {
 
         NumberAxis rangeAxis = (NumberAxis) plot.getRangeAxis();
         rangeAxis.setLowerBound(0);
+
+        List<GcPauseEvent> events = model.getPauseEvents();
+        NumberAxis domainAxis = (NumberAxis) plot.getDomainAxis();
+        configureUptimeDomainRange(domainAxis, samples, events);
+
+        DualUptimeDateAxis.attach(plot, events);
+        ChartAxisConstraints.register(chart, events);
         return chart;
+    }
+
+    private static void configureUptimeDomainRange(NumberAxis domainAxis, List<HeapSample> samples,
+                                                   List<GcPauseEvent> events) {
+        double dataMax = samples.stream().mapToDouble(HeapSample::uptimeSeconds).max().orElse(1);
+        domainAxis.setAutoRange(false);
+        domainAxis.setRange(0, Math.max(dataMax, 1));
     }
 
     public static JFreeChart createPauseBreakdownChart(GcMetrics metrics) {
@@ -320,6 +336,10 @@ public final class ChartFactoryUtil {
         renderer.setSeriesPaint(2, HUM_COLOR);
         renderer.setSeriesPaint(3, META_COLOR);
         renderer.setMaximumBarWidth(0.35);
+        if (plot.getRangeAxis() instanceof NumberAxis valueAxis) {
+            valueAxis.setLowerBound(0);
+        }
+        ChartAxisConstraints.register(chart, List.of());
         return chart;
     }
 
@@ -357,6 +377,7 @@ public final class ChartFactoryUtil {
 
     public static JFreeChart createYoungGenChart(List<GcPauseEvent> events, long regionSizeBytes) {
         double regionMb = regionSizeBytes / (1024.0 * 1024.0);
+        EventTimeline timeline = EventTimeline.from(events);
         TimeSeries allocated = new TimeSeries("allocated space");
         TimeSeries before = new TimeSeries("before GC");
         TimeSeries after = new TimeSeries("after GC");
@@ -365,7 +386,7 @@ public final class ChartFactoryUtil {
             if (e.edenRegionsCap() == null && e.edenRegionsBefore() == null) {
                 continue;
             }
-            Date t = eventDate(e);
+            Date t = timeline.dateFor(e);
             if (e.edenRegionsCap() != null) {
                 int cap = e.edenRegionsCap() + nz(e.survivorRegionsCap());
                 allocated.addOrUpdate(new Millisecond(t), cap * regionMb);
@@ -384,10 +405,11 @@ public final class ChartFactoryUtil {
         dataset.addSeries(before);
         dataset.addSeries(after);
         return buildDateChart("Young Gen", "(mb)", dataset,
-                new Color[]{YOUNG_COLOR, new Color(211, 47, 47), new Color(156, 39, 176)});
+                new Color[]{YOUNG_COLOR, new Color(211, 47, 47), new Color(156, 39, 176)}, events);
     }
 
     public static JFreeChart createMetaSpaceTabChart(List<GcPauseEvent> events) {
+        EventTimeline timeline = EventTimeline.from(events);
         TimeSeries capacity = new TimeSeries("allocated space");
         TimeSeries used = new TimeSeries("after GC");
 
@@ -395,7 +417,7 @@ public final class ChartFactoryUtil {
             if (e.metaspaceUsedAfterKb() == null) {
                 continue;
             }
-            Date t = eventDate(e);
+            Date t = timeline.dateFor(e);
             if (e.metaspaceCapacityKb() != null) {
                 capacity.addOrUpdate(new Millisecond(t), e.metaspaceCapacityKb() / 1024.0);
             }
@@ -405,42 +427,62 @@ public final class ChartFactoryUtil {
         TimeSeriesCollection dataset = new TimeSeriesCollection();
         dataset.addSeries(capacity);
         dataset.addSeries(used);
-        return buildDateChart("Meta Space", "(mb)", dataset, new Color[]{META_COLOR, new Color(0, 150, 136)});
+        return buildDateChart("Meta Space", "(mb)", dataset, new Color[]{META_COLOR, new Color(0, 150, 136)}, events);
     }
 
     private static JFreeChart createGcTimeSeries(String title, String yLabel, List<GcPauseEvent> events,
                                                  ToDoubleFunction<GcPauseEvent> valueFn, Color color) {
+        EventTimeline timeline = EventTimeline.from(events);
         TimeSeries series = new TimeSeries(title);
         for (GcPauseEvent e : events) {
-            series.addOrUpdate(new Millisecond(eventDate(e)), valueFn.applyAsDouble(e));
+            series.addOrUpdate(new Millisecond(timeline.dateFor(e)), valueFn.applyAsDouble(e));
         }
         TimeSeriesCollection dataset = new TimeSeriesCollection(series);
-        return buildDateChart(title, yLabel, dataset, new Color[]{color});
+        return buildDateChart(title, yLabel, dataset, new Color[]{color}, events);
     }
 
     private static JFreeChart buildDateChart(String title, String yLabel, TimeSeriesCollection dataset,
-                                             Color[] colors) {
+                                             Color[] colors, List<GcPauseEvent> events) {
         JFreeChart chart = ChartFactory.createTimeSeriesChart(
-                title, "Time", yLabel, dataset, true, true, false);
+                title, "Time (GC log timestamp)", yLabel, dataset, true, true, false);
         XYPlot plot = chart.getXYPlot();
         plot.setBackgroundPaint(Color.WHITE);
         DateAxis domain = (DateAxis) plot.getDomainAxis();
-        domain.setDateFormatOverride(new SimpleDateFormat("MMM dd, HH:mm"));
+        domain.setDateFormatOverride(new SimpleDateFormat("MMM dd, HH:mm:ss"));
+        long minTime = ChartAxisConstraints.minLogTimeMillis(events);
+        if (minTime > 0) {
+            domain.setMinimumDate(new Date(minTime));
+        }
         XYLineAndShapeRenderer renderer = new XYLineAndShapeRenderer(true, true);
         for (int i = 0; i < colors.length; i++) {
             renderer.setSeriesPaint(i, colors[i]);
             renderer.setSeriesStroke(i, new BasicStroke(2f));
         }
         plot.setRenderer(renderer);
-        ((NumberAxis) plot.getRangeAxis()).setLowerBound(0);
+        NumberAxis range = (NumberAxis) plot.getRangeAxis();
+        range.setLowerBound(0);
+        range.setAutoRangeIncludesZero(true);
+        ChartAxisConstraints.register(chart, events);
         return chart;
     }
 
-    private static Date eventDate(GcPauseEvent e) {
-        if (e.timestamp() != null && !e.timestamp().equals(java.time.Instant.EPOCH)) {
-            return Date.from(e.timestamp());
+    private record EventTimeline(long anchorEpochMs, double minUptime) {
+        static EventTimeline from(List<GcPauseEvent> events) {
+            long anchor = ChartAxisConstraints.minLogTimeMillis(events);
+            if (anchor < 0) {
+                anchor = System.currentTimeMillis();
+            }
+            double minUp = ChartAxisConstraints.minUptime(events);
+            return new EventTimeline(anchor, minUp);
         }
-        return new Date((long) (e.uptimeSeconds() * 1000));
+
+        Date dateFor(GcPauseEvent e) {
+            if (ChartAxisConstraints.validTimestamp(e.timestamp())) {
+                return Date.from(e.timestamp());
+            }
+            long ms = anchorEpochMs + (long) ((e.uptimeSeconds() - minUptime) * 1000.0);
+            return new Date(ms);
+        }
     }
 
     private static int nz(Integer v) {

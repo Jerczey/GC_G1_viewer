@@ -6,6 +6,7 @@ import com.gcviewer.model.GcPauseEvent;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -26,6 +27,8 @@ class UnifiedGcLogParserTest {
     assertTrue(first.pauseType().contains("Young"));
     assertTrue(first.pauseMs() > 0);
     assertTrue(first.heapBeforeBytes() > first.heapAfterBytes());
+    assertNotEquals(Instant.EPOCH, first.timestamp());
+    assertTrue(first.timestamp().toString().startsWith("2026-05-27"));
   }
 
   @Test
