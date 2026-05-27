@@ -23,13 +23,13 @@ public class MainFrame extends JFrame {
     private final GcEventTablePanel eventTablePanel = new GcEventTablePanel();
     private final GcEventDetailPanel detailPanel = new GcEventDetailPanel();
 
-    private ChartPanel heapChartPanel;
-    private ChartPanel pauseBreakdownPanel;
-    private ChartPanel pauseTimelinePanel;
-    private ChartPanel regionsChartPanel;
-    private ChartPanel metaspaceChartPanel;
-    private ChartPanel pauseByTypeChartPanel;
-    private ChartPanel phaseChartPanel;
+    private final JvmMemorySizePanel jvmMemorySizePanel = new JvmMemorySizePanel();
+    private ChartPanel heapAfterGcPanel;
+    private ChartPanel heapBeforeGcPanel;
+    private ChartPanel pauseGcDurationPanel;
+    private ChartPanel reclaimedBytesPanel;
+    private ChartPanel youngGenPanel;
+    private ChartPanel metaSpacePanel;
 
     private GcLogModel currentModel;
     private GcPauseEvent selectedEvent;
@@ -54,27 +54,23 @@ public class MainFrame extends JFrame {
         top.add(metricsPanel, BorderLayout.CENTER);
 
         JTabbedPane charts = new JTabbedPane();
-        heapChartPanel = createChartPanel(null);
-        regionsChartPanel = createChartPanel(null);
-        metaspaceChartPanel = createChartPanel(null);
-        pauseBreakdownPanel = createChartPanel(null);
-        pauseByTypeChartPanel = createChartPanel(null);
-        pauseTimelinePanel = createChartPanel(null);
-        phaseChartPanel = createChartPanel(null);
-        charts.addTab("Heap Usage", heapChartPanel);
-        charts.addTab("G1 Regions", regionsChartPanel);
-        charts.addTab("Metaspace", metaspaceChartPanel);
-        charts.addTab("Pause by Reason", pauseBreakdownPanel);
-        charts.addTab("Pause by Type", pauseByTypeChartPanel);
-        charts.addTab("Pause Timeline", pauseTimelinePanel);
-        charts.addTab("GC Phases", phaseChartPanel);
+        charts.addTab("JVM Memory Size", jvmMemorySizePanel);
+        heapAfterGcPanel = createChartPanel(null);
+        heapBeforeGcPanel = createChartPanel(null);
+        pauseGcDurationPanel = createChartPanel(null);
+        reclaimedBytesPanel = createChartPanel(null);
+        youngGenPanel = createChartPanel(null);
+        metaSpacePanel = createChartPanel(null);
+        charts.addTab("Heap after GC", heapAfterGcPanel);
+        charts.addTab("Heap before GC", heapBeforeGcPanel);
+        charts.addTab("Pause GC Duration", pauseGcDurationPanel);
+        charts.addTab("Reclaimed Bytes", reclaimedBytesPanel);
+        charts.addTab("Young Gen", youngGenPanel);
+        charts.addTab("Meta Space", metaSpacePanel);
 
         eventTablePanel.setSelectionListener(event -> {
             selectedEvent = event;
             detailPanel.showEvent(event);
-            if (currentModel != null) {
-                phaseChartPanel.setChart(ChartFactoryUtil.createPhaseChart(event));
-            }
         });
 
         JSplitPane tableDetail = new JSplitPane(JSplitPane.VERTICAL_SPLIT, eventTablePanel, detailPanel);
@@ -130,7 +126,7 @@ public class MainFrame extends JFrame {
                         Enable logging on the JVM:
                         -Xlog:gc*,safepoint:file=/path/gc-%t.log:time,uptime,level,tags
 
-                        Features: heap charts, pause breakdown, throughput metrics, live tail.
+                        Features: JVM memory summary, heap/GC timelines, metrics, live tail.
                         """,
                 "About GC G1 Viewer",
                 JOptionPane.INFORMATION_MESSAGE));
@@ -303,18 +299,23 @@ public class MainFrame extends JFrame {
         selectedEvent = null;
         metricsPanel.update(model);
         eventTablePanel.update(model);
+
         var events = model.getPauseEvents();
-        heapChartPanel.setChart(ChartFactoryUtil.createHeapChart(model));
-        regionsChartPanel.setChart(ChartFactoryUtil.createG1RegionsChart(model, events));
-        metaspaceChartPanel.setChart(ChartFactoryUtil.createMetaspaceChart(events));
-        pauseBreakdownPanel.setChart(ChartFactoryUtil.createPauseBreakdownChart(model.getMetrics()));
-        pauseByTypeChartPanel.setChart(ChartFactoryUtil.createPauseByTypeChart(model.getMetrics()));
-        pauseTimelinePanel.setChart(ChartFactoryUtil.createPauseTimelineChart(events));
-        if (!events.isEmpty() && selectedEvent == null) {
+        long regionBytes = model.getHeapInfo() != null && model.getHeapInfo().regionSizeBytes() > 0
+                ? model.getHeapInfo().regionSizeBytes() : 1024L * 1024L;
+
+        jvmMemorySizePanel.update(model);
+        heapAfterGcPanel.setChart(ChartFactoryUtil.createHeapAfterGcChart(events));
+        heapBeforeGcPanel.setChart(ChartFactoryUtil.createHeapBeforeGcChart(events));
+        pauseGcDurationPanel.setChart(ChartFactoryUtil.createPauseGcDurationChart(events));
+        reclaimedBytesPanel.setChart(ChartFactoryUtil.createReclaimedBytesChart(events));
+        youngGenPanel.setChart(ChartFactoryUtil.createYoungGenChart(events, regionBytes));
+        metaSpacePanel.setChart(ChartFactoryUtil.createMetaSpaceTabChart(events));
+
+        if (!events.isEmpty()) {
             selectedEvent = events.get(0);
         }
         detailPanel.showEvent(selectedEvent);
-        phaseChartPanel.setChart(ChartFactoryUtil.createPhaseChart(selectedEvent));
     }
 
     private void statusError(String message) {

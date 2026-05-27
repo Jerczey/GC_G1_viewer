@@ -4,11 +4,14 @@ Standalone desktop tool for analyzing **JDK unified G1 GC logs** from JBoss EAP 
 
 ## Features
 
-- **Heap usage chart** — used vs capacity over JVM uptime (from each GC pause)
-- **Pause breakdown** — accumulated pause time grouped by reason (evacuation, remark, metadata, GCLocker, etc.)
-- **Pause timeline** — individual pause durations over time
-- **Performance metrics** — throughput %, total/average/longest GC pause, event counts
-- **GC event table** — sortable list of every parsed pause
+- **JVM Memory Size** — summary table and allocated vs peak chart (Young, Old, Humongous, Metaspace)
+- **Heap after GC / Heap before GC** — heap usage over time
+- **Pause GC Duration** — stop-the-world pause times per GC event
+- **Reclaimed Bytes** — memory reclaimed per GC
+- **Young Gen** — allocated, before GC, and after GC (from G1 Eden/Survivor regions)
+- **Meta Space** — capacity vs used over time
+- **Performance metrics** — throughput %, total/average/longest/median pause, event counts
+- **GC event table** — detailed list with phases, regions, metaspace, CPU
 - **Real-time watch** — tail a live GC log file while RH-SSO / JBoss is running
 
 ## Requirements

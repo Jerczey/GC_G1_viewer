@@ -6,20 +6,30 @@ import com.gcviewer.model.GcPauseEvent;
 import com.gcviewer.model.HeapSample;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.JFreeChart;
+import com.gcviewer.model.JvmMemoryStats;
+import com.gcviewer.model.GenerationMemoryStats;
+import org.jfree.chart.axis.DateAxis;
 import org.jfree.chart.axis.NumberAxis;
 import org.jfree.chart.plot.CategoryPlot;
 import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.plot.XYPlot;
 import org.jfree.chart.renderer.category.BarRenderer;
+import org.jfree.chart.renderer.category.StackedBarRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.data.category.DefaultCategoryDataset;
+import org.jfree.data.time.Millisecond;
+import org.jfree.data.time.TimeSeries;
+import org.jfree.data.time.TimeSeriesCollection;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
 
 import java.awt.*;
 import java.text.DecimalFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.function.ToDoubleFunction;
 
 public final class ChartFactoryUtil {
     private static final Color USED_COLOR = new Color(52, 120, 198);
@@ -279,5 +289,161 @@ public final class ChartFactoryUtil {
 
     public static String formatMb(long bytes) {
         return new DecimalFormat("#,##0.0").format(bytes / (1024.0 * 1024.0)) + " MB";
+    }
+
+    public static JFreeChart createJvmMemorySizeChart(JvmMemoryStats stats) {
+        DefaultCategoryDataset dataset = new DefaultCategoryDataset();
+        addMemorySegment(dataset, "allocated", "Young", stats.young().allocatedBytes(), stats.young().allocatedKnown());
+        addMemorySegment(dataset, "allocated", "Old", stats.old().allocatedBytes(), stats.old().allocatedKnown());
+        addMemorySegment(dataset, "allocated", "Humongous", stats.humongous().allocatedBytes(), stats.humongous().allocatedKnown());
+        addMemorySegment(dataset, "allocated", "Meta", stats.metaspace().allocatedBytes(), stats.metaspace().allocatedKnown());
+        addMemorySegment(dataset, "peak usage", "Young", stats.young().peakBytes(), stats.young().peakBytes() > 0);
+        addMemorySegment(dataset, "peak usage", "Old", stats.old().peakBytes(), stats.old().peakBytes() > 0);
+        addMemorySegment(dataset, "peak usage", "Humongous", stats.humongous().peakBytes(), stats.humongous().peakBytes() > 0);
+        addMemorySegment(dataset, "peak usage", "Meta", stats.metaspace().peakBytes(), stats.metaspace().peakBytes() > 0);
+
+        JFreeChart chart = ChartFactory.createStackedBarChart(
+                "JVM Memory Size — Allocated vs Peak (MB)",
+                "",
+                "MB",
+                dataset,
+                PlotOrientation.HORIZONTAL,
+                true,
+                true,
+                false
+        );
+        CategoryPlot plot = chart.getCategoryPlot();
+        plot.setBackgroundPaint(Color.WHITE);
+        StackedBarRenderer renderer = (StackedBarRenderer) plot.getRenderer();
+        renderer.setSeriesPaint(0, YOUNG_COLOR);
+        renderer.setSeriesPaint(1, OLD_COLOR);
+        renderer.setSeriesPaint(2, HUM_COLOR);
+        renderer.setSeriesPaint(3, META_COLOR);
+        renderer.setMaximumBarWidth(0.35);
+        return chart;
+    }
+
+    private static final Color YOUNG_COLOR = new Color(0, 150, 136);
+    private static final Color OLD_COLOR = new Color(25, 118, 210);
+    private static final Color HUM_COLOR = new Color(123, 31, 162);
+    private static final Color META_COLOR = new Color(139, 195, 74);
+
+    private static void addMemorySegment(DefaultCategoryDataset dataset, String row, String segment,
+                                         long bytes, boolean include) {
+        if (include && bytes > 0) {
+            dataset.addValue(bytes / (1024.0 * 1024.0), segment, row);
+        }
+    }
+
+    public static JFreeChart createHeapAfterGcChart(List<GcPauseEvent> events) {
+        return createGcTimeSeries("Heap after GC", "(mb)", events,
+                e -> e.heapAfterBytes() / (1024.0 * 1024.0), new Color(156, 39, 176));
+    }
+
+    public static JFreeChart createHeapBeforeGcChart(List<GcPauseEvent> events) {
+        return createGcTimeSeries("Heap before GC", "(mb)", events,
+                e -> e.heapBeforeBytes() / (1024.0 * 1024.0), new Color(211, 47, 47));
+    }
+
+    public static JFreeChart createPauseGcDurationChart(List<GcPauseEvent> events) {
+        return createGcTimeSeries("Pause GC Duration", "(ms)", events, GcPauseEvent::pauseMs,
+                new Color(120, 52, 198));
+    }
+
+    public static JFreeChart createReclaimedBytesChart(List<GcPauseEvent> events) {
+        return createGcTimeSeries("Reclaimed Bytes", "(mb)", events,
+                e -> e.heapReclaimedBytes() / (1024.0 * 1024.0), new Color(0, 121, 107));
+    }
+
+    public static JFreeChart createYoungGenChart(List<GcPauseEvent> events, long regionSizeBytes) {
+        double regionMb = regionSizeBytes / (1024.0 * 1024.0);
+        TimeSeries allocated = new TimeSeries("allocated space");
+        TimeSeries before = new TimeSeries("before GC");
+        TimeSeries after = new TimeSeries("after GC");
+
+        for (GcPauseEvent e : events) {
+            if (e.edenRegionsCap() == null && e.edenRegionsBefore() == null) {
+                continue;
+            }
+            Date t = eventDate(e);
+            if (e.edenRegionsCap() != null) {
+                int cap = e.edenRegionsCap() + nz(e.survivorRegionsCap());
+                allocated.addOrUpdate(new Millisecond(t), cap * regionMb);
+            }
+            if (e.edenRegionsBefore() != null) {
+                int used = e.edenRegionsBefore() + nz(e.survivorRegionsBefore());
+                before.addOrUpdate(new Millisecond(t), used * regionMb);
+            }
+            if (e.edenRegionsAfter() != null) {
+                after.addOrUpdate(new Millisecond(t), e.edenRegionsAfter() * regionMb);
+            }
+        }
+
+        TimeSeriesCollection dataset = new TimeSeriesCollection();
+        dataset.addSeries(allocated);
+        dataset.addSeries(before);
+        dataset.addSeries(after);
+        return buildDateChart("Young Gen", "(mb)", dataset,
+                new Color[]{YOUNG_COLOR, new Color(211, 47, 47), new Color(156, 39, 176)});
+    }
+
+    public static JFreeChart createMetaSpaceTabChart(List<GcPauseEvent> events) {
+        TimeSeries capacity = new TimeSeries("allocated space");
+        TimeSeries used = new TimeSeries("after GC");
+
+        for (GcPauseEvent e : events) {
+            if (e.metaspaceUsedAfterKb() == null) {
+                continue;
+            }
+            Date t = eventDate(e);
+            if (e.metaspaceCapacityKb() != null) {
+                capacity.addOrUpdate(new Millisecond(t), e.metaspaceCapacityKb() / 1024.0);
+            }
+            used.addOrUpdate(new Millisecond(t), e.metaspaceUsedAfterKb() / 1024.0);
+        }
+
+        TimeSeriesCollection dataset = new TimeSeriesCollection();
+        dataset.addSeries(capacity);
+        dataset.addSeries(used);
+        return buildDateChart("Meta Space", "(mb)", dataset, new Color[]{META_COLOR, new Color(0, 150, 136)});
+    }
+
+    private static JFreeChart createGcTimeSeries(String title, String yLabel, List<GcPauseEvent> events,
+                                                 ToDoubleFunction<GcPauseEvent> valueFn, Color color) {
+        TimeSeries series = new TimeSeries(title);
+        for (GcPauseEvent e : events) {
+            series.addOrUpdate(new Millisecond(eventDate(e)), valueFn.applyAsDouble(e));
+        }
+        TimeSeriesCollection dataset = new TimeSeriesCollection(series);
+        return buildDateChart(title, yLabel, dataset, new Color[]{color});
+    }
+
+    private static JFreeChart buildDateChart(String title, String yLabel, TimeSeriesCollection dataset,
+                                             Color[] colors) {
+        JFreeChart chart = ChartFactory.createTimeSeriesChart(
+                title, "Time", yLabel, dataset, true, true, false);
+        XYPlot plot = chart.getXYPlot();
+        plot.setBackgroundPaint(Color.WHITE);
+        DateAxis domain = (DateAxis) plot.getDomainAxis();
+        domain.setDateFormatOverride(new SimpleDateFormat("MMM dd, HH:mm"));
+        XYLineAndShapeRenderer renderer = new XYLineAndShapeRenderer(true, true);
+        for (int i = 0; i < colors.length; i++) {
+            renderer.setSeriesPaint(i, colors[i]);
+            renderer.setSeriesStroke(i, new BasicStroke(2f));
+        }
+        plot.setRenderer(renderer);
+        ((NumberAxis) plot.getRangeAxis()).setLowerBound(0);
+        return chart;
+    }
+
+    private static Date eventDate(GcPauseEvent e) {
+        if (e.timestamp() != null && !e.timestamp().equals(java.time.Instant.EPOCH)) {
+            return Date.from(e.timestamp());
+        }
+        return new Date((long) (e.uptimeSeconds() * 1000));
+    }
+
+    private static int nz(Integer v) {
+        return v != null ? v : 0;
     }
 }
